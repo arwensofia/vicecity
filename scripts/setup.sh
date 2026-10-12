@@ -31,7 +31,7 @@ fi
 
 "$GHIDRA_HOME/support/analyzeHeadless" "$ROOT/ghidra_project" vicecity \
   -import "$ROOT/game/$ELF_NAME" -overwrite \
-  -processor "MIPS:LE:64:64-32addr" \
+  -processor "r5900:LE:32:default" \
   -scriptPath "$ROOT/tools/ghidra" \
   -postScript NameFromAsserts.java \
   -postScript ExportFunctions.java "$ROOT/out/functions.csv"

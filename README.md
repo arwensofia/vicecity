@@ -10,6 +10,9 @@ it (`game/`, `ghidra_project/`, `out/`) is generated locally and git-ignored.
 
 - macOS on Apple Silicon
 - `brew install ghidra` (pulls in `openjdk@21`)
+- [ghidra-emotionengine-reloaded](https://github.com/chaoticgd/ghidra-emotionengine-reloaded/releases)
+  build matching your Ghidra version, unzipped into
+  `~/Library/ghidra/ghidra_<version>_PUBLIC/Extensions/`
 
 ## Usage
 
