@@ -1,0 +1,20 @@
+# --- Game data: never commit (copyrighted; user supplies their own disc) ---
+*.iso
+*.chd
+*.7z
+*.bin
+*.img
+*.dir
+*.txd
+*.dff
+game/
+SLUS_*
+
+# --- Generated from the game binary: stays local ---
+ghidra_project/
+out/
+recomp_out/
+
+# --- Build / OS ---
+build/
+.DS_Store
