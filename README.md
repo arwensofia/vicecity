@@ -32,3 +32,7 @@ scripts/classify.sh
 Known-good executable SHA-1: `80d9fc73514308a16683f0b807f75967b67e1c87`
 
 See [docs/PLAN.md](docs/PLAN.md) for the roadmap and current status.
+
+## License
+
+GPL-3.0 (see `LICENSE`); the runtime reuses PCSX2 code.

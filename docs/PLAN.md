@@ -17,6 +17,14 @@
    IOP/SIF (CD streaming, pad, memory card), SPU2 → CoreAudio, pad → GameController.
 4. **Boot** — iterate on crashes until title screen, then gameplay.
 5. **Assets** — read PS2-native RenderWare streams directly from the disc at runtime.
+6. *(Later, optional)* **Native renderer** — replace RenderWare's PS2 pipelines and the
+   PCSX2 GS/VU1 layer with a Metal renderer at the atomic/world-sector level.
+
+## Agents
+
+Project subagents in `.claude/agents/`: `ghidra-analyst` (static analysis),
+`recompiler-engineer` (`recomp/`), `runtime-engineer` (`runtime/`, `third_party/`),
+`asset-tools` (`assets/`). Shared rules in `CLAUDE.md`.
 
 ## Status
 
@@ -55,8 +63,9 @@ Named: `Explosion::AddExplosion` `0x147350`, `ProjectileInfo::AddProjectile` `0x
 - [x] Identify statically linked libraries and the hardware boundary — see
       [MODULES.md](MODULES.md): 82 functions touch hardware, 65 syscalls, RenderWare is
       ~12% of code, game ~83%.
-- [ ] Decide graphics strategy: emulate VU1+GS vs. replace RenderWare's PS2 pipelines
-      with Metal.
+- [x] Decide graphics strategy (2026-10-13): reuse PCSX2's GS (Metal) + VU1 now; replacing
+      RenderWare's PS2 pipelines with a native Metal renderer is a possible later phase.
+      Project relicensed GPL-3.0 accordingly.
 - [ ] Identify the remaining string-less libraries (`libcdvd`, `libscf`, `libipu`,
       `libvu0`) and the unknown tail at `0x42ded0+`.
 - [ ] Pick or write the recompiler (MIPS R5900 → C).
