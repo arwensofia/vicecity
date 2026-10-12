@@ -23,6 +23,12 @@ scripts/setup.sh "/path/to/Grand Theft Auto - Vice City (USA) (v1.40).iso"
 This mounts the ISO read-only, extracts `SLUS_205.52`, runs Ghidra headless analysis,
 labels functions from leftover debug strings, and writes `out/functions.csv`.
 
+Then map modules and the hardware boundary (writes `out/modules.md`):
+
+```bash
+scripts/classify.sh
+```
+
 Known-good executable SHA-1: `80d9fc73514308a16683f0b807f75967b67e1c87`
 
 See [docs/PLAN.md](docs/PLAN.md) for the roadmap and current status.

@@ -52,6 +52,11 @@ Named: `Explosion::AddExplosion` `0x147350`, `ProjectileInfo::AddProjectile` `0x
 
 - [x] Add an R5900 (Emotion Engine) processor module to Ghidra.
 - [ ] Resolve `$gp`-relative and `lui`/`addiu` string refs to improve naming yield.
-- [ ] Identify statically linked libraries (Sony SDK `libgraph`/`libdma`/`libpad`/
-      `libmc`/`libsd`, RenderWare) by signature — these become the runtime boundary.
+- [x] Identify statically linked libraries and the hardware boundary — see
+      [MODULES.md](MODULES.md): 82 functions touch hardware, 65 syscalls, RenderWare is
+      ~12% of code, game ~83%.
+- [ ] Decide graphics strategy: emulate VU1+GS vs. replace RenderWare's PS2 pipelines
+      with Metal.
+- [ ] Identify the remaining string-less libraries (`libcdvd`, `libscf`, `libipu`,
+      `libvu0`) and the unknown tail at `0x42ded0+`.
 - [ ] Pick or write the recompiler (MIPS R5900 → C).
