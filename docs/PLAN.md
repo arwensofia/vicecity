@@ -70,7 +70,29 @@ Named: `Explosion::AddExplosion` `0x147350`, `ProjectileInfo::AddProjectile` `0x
       `libscf`, `libdev` (not libvu0), libgcc, newlib libm, a DTS Interactive encoder, RenderWare
       toolkit code, libkernl kernel patches and static constructors; compiler-fingerprint rule
       + `tools/module_overrides.csv`; 0 functions left unknown. See [MODULES.md](MODULES.md).
-- [ ] Pick or write the recompiler (MIPS R5900 → C).
+- [x] Pick or write the recompiler (MIPS R5900 → C) — own tool in `recomp/`, see Phase 2.
+
+### Phase 2 — recompiler first version (2026-10-13)
+
+`recomp/` (C++20, CMake): ELF loader, full EE decoder (core, MMI, COP0, COP1, COP2
+macro mode: 351 opcodes), recursive-descent function analysis, per-function C emission
+into git-ignored `recomp_out/`. ABI: `runtime/include/ps2_abi.h`; instruction semantics:
+`recomp/include/ps2_ops.h`; per-binary config: `recomp/config/SLUS_205.52.cfg`
+(kernel patch range excluded, `.ctors` table walked).
+
+| | |
+|---|---|
+| Functions emitted | 5,415 (5,403 CSV + 12 discovered branch targets) |
+| Fully translated | 5,413; 2 contain one runtime-dispatched `jr` |
+| Unhandled encodings | 0 |
+| Jump tables resolved | 246 |
+| Code covered | 813,693 instructions (3.25 MB) |
+| Recompile time | 1.2 s, deterministic |
+| Output | 43 C files, 45 MB; `clang -O2 -c` clean (-Wall), 59 s on 8 cores |
+| Tests | 114 snippet tests, all 351 opcodes exercised, all passing |
+
+Open: thread/context switching and `setjmp`/`longjmp` need runtime HLE; FPU O/U flags
+not modelled; VU0 macro flags are always computed (could be elided by liveness).
 
 ### Phase 3 — GS/VU1 runtime layer (2026-10-13)
 
