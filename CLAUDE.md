@@ -13,6 +13,9 @@ static recompilation. Roadmap and status: `docs/PLAN.md`. Module/hardware map: `
 - License is GPL-3.0 (required because we reuse PCSX2 code). Keep PCSX2 copyright headers
   intact and record imported files and their upstream commit in `third_party/README.md`.
 - The game executable is untrusted input. Run Python that reads it with `python3 -I`.
+- Never fetch, consult or copy source code from re3/reVC or other decompilations taken down
+  by rights holders. Everything is derived from our own analysis of the binary; well-known
+  class/function names may be used as labels, with evidence from the binary.
 
 ## Layout
 
