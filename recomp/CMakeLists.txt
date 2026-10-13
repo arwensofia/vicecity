@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# ps2recomp: R5900 (EE) -> C static recompiler.
+# ps2recomp: R5900 (EE) -> C static recompiler, and the vc_game library built
+# from its output (cmake/vc_game.cmake).
 #   cmake -S recomp -B build/recomp -G Ninja && cmake --build build/recomp
 #   ctest --test-dir build/recomp --output-on-failure
-#   build/recomp/ps2recomp --elf game/SLUS_205.52 --functions out/functions.csv --out recomp_out
+#   cmake --build build/recomp --target vc_game     # regenerate recomp_out + compile
+# As a subproject: add_subdirectory(<repo>/recomp <bindir>/recomp), then link vc_game.
 cmake_minimum_required(VERSION 3.24)
 project(ps2recomp LANGUAGES C CXX)
 
@@ -34,8 +36,12 @@ target_compile_options(ps2recomp PRIVATE -Wall -Wextra -Wpedantic)
 set(PS2_GENERATED_C_FLAGS -ffp-contract=off -fno-math-errno -fno-strict-aliasing
 	-Wno-unused-label -Wno-unused-function -Wno-pedantic)
 
-include(CTest)
-if(BUILD_TESTING)
+option(PS2RECOMP_BUILD_TESTS "Build the recompiler semantic tests" ${PROJECT_IS_TOP_LEVEL})
+if(PROJECT_IS_TOP_LEVEL)
+	include(CTest)
+endif()
+if(PS2RECOMP_BUILD_TESTS AND (BUILD_TESTING OR NOT DEFINED BUILD_TESTING))
+	enable_testing()
 	# Stage 1: translate every test snippet in tests/cases.inc with the real
 	# emitter. Stage 2: compile the generated C with the runner and execute it.
 	add_executable(recomp_test_gen tests/test_gen.cpp)
@@ -57,4 +63,22 @@ if(BUILD_TESTING)
 		"-O2;-Wall;-Werror=implicit-function-declaration;${PS2_GENERATED_C_FLAGS}")
 	target_compile_options(recomp_tests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra>)
 	add_test(NAME recomp_tests COMMAND recomp_tests)
+
+	# Same snippets compiled with every trace/debug point enabled, linked with the
+	# support library (trace ring, symbols, default dispatch).
+	set(GEN_C_TRACE ${CMAKE_CURRENT_BINARY_DIR}/tests_generated_trace.c)
+	add_custom_command(OUTPUT ${GEN_C_TRACE}
+		COMMAND ${CMAKE_COMMAND} -E copy ${GEN_C} ${GEN_C_TRACE}
+		DEPENDS ${GEN_C})
+	add_executable(recomp_trace_tests tests/test_trace.cpp tests/test_runtime.cpp ${GEN_C_TRACE}
+		support/ps2_recomp_support.c)
+	target_include_directories(recomp_trace_tests PRIVATE tests ${CMAKE_CURRENT_BINARY_DIR}
+		${PS2_ABI_INCLUDE} ${PS2_OPS_INCLUDE})
+	set_source_files_properties(${GEN_C_TRACE} PROPERTIES COMPILE_OPTIONS
+		"-O2;-Wall;-Werror=implicit-function-declaration;-DPS2_TRACE=3;-DPS2_TRACK_PC=2;-DPS2_BACKEDGE_HOOK=1;${PS2_GENERATED_C_FLAGS}")
+	target_compile_options(recomp_trace_tests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra>
+		$<$<COMPILE_LANGUAGE:C>:-Wall -Wextra>)
+	add_test(NAME recomp_trace_tests COMMAND recomp_trace_tests)
 endif()
+
+include(cmake/vc_game.cmake)

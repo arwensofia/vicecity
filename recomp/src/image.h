@@ -21,6 +21,7 @@ public:
 	std::vector<Segment> segments;
 	uint32_t entry = 0;
 	std::vector<std::pair<uint32_t, uint32_t>> excluded; // [start, end) never code
+	std::vector<std::pair<uint32_t, uint32_t>> exec_sections; // [start, end) of SHF_EXECINSTR sections
 
 	bool is_excluded(uint32_t addr) const;
 
@@ -28,7 +29,9 @@ public:
 	bool read32(uint32_t addr, uint32_t &out) const;
 	// True if addr lies in the file-backed part of an executable segment.
 	bool is_code(uint32_t addr) const;
-	uint32_t code_end(uint32_t addr) const; // end of the executable segment containing addr
+	uint32_t code_end(uint32_t addr) const;
+	// is_code() and inside an executable ELF section (when the ELF has sections).
+	bool in_exec_section(uint32_t addr) const; // end of the executable segment containing addr
 
 	// Loads an ELF32 little-endian MIPS executable. The file is untrusted:
 	// every offset/size is bounds-checked. Returns false with a message.
@@ -40,6 +43,11 @@ struct FunctionDef {
 	uint32_t size = 0;
 	std::string name;
 };
+
+// Generic CSV reader (double-quoted fields may contain commas; "" is a quote).
+// The first line is treated as a header and returned in `header`.
+bool read_csv(const std::string &path, std::vector<std::string> &header,
+              std::vector<std::vector<std::string>> &rows, std::string &err);
 
 // Parses out/functions.csv (address,size,namespace,name,comment).
 bool load_function_csv(const std::string &path, std::vector<FunctionDef> &out, std::string &err);

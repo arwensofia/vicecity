@@ -52,6 +52,84 @@ extern "C" {
 #define PS2_TAILCALL(fn) do { fn(c); return; } while (0)
 #endif
 
+/* ------------------------------------------------------------------------ */
+/* Trace / debug points. The recompiler emits                                */
+/*   PS2_TRACE_FN(entry)  at every function entry,                           */
+/*   PS2_TRACE_BB(addr)   at every other basic-block leader (branch targets  */
+/*                        and the instruction after a conditional branch's   */
+/*                        or a call's delay slot),                           */
+/*   PS2_MEM_PC(addr)     before every load/store.                           */
+/* They expand to nothing unless enabled when compiling recompiled code:     */
+/*   -DPS2_TRACE=n     bit 0: call ps2_trace_fn(c, entry) on function entry   */
+/*                     bit 1: call ps2_trace_bb(c, addr) at every block       */
+/*   -DPS2_TRACK_PC=n  1: c->pc = EE address of the current function entry /  */
+/*                        basic block (crash -> EE address, ~1 store/block)   */
+/*                     2: additionally c->pc = address of each load/store     */
+/* Hook declarations and the default ring-buffer implementation:             */
+/* recomp/include/ps2_recomp.h, recomp/support/ps2_recomp_support.c.         */
+/* ------------------------------------------------------------------------ */
+#ifndef PS2_TRACE
+#define PS2_TRACE 0
+#endif
+#ifndef PS2_TRACK_PC
+#define PS2_TRACK_PC 0
+#endif
+
+#if PS2_TRACE
+void ps2_trace_fn(ps2_cpu *c, uint32_t entry);
+void ps2_trace_bb(ps2_cpu *c, uint32_t addr);
+#endif
+
+#if PS2_TRACK_PC >= 1
+#define PS2_PC_BLOCK_(a) (c->pc = (a))
+#else
+#define PS2_PC_BLOCK_(a) ((void)0)
+#endif
+#if PS2_TRACE & 1
+#define PS2_TRACE_FN_HOOK_(a) ps2_trace_fn(c, (a))
+#else
+#define PS2_TRACE_FN_HOOK_(a) ((void)0)
+#endif
+#if PS2_TRACE & 2
+#define PS2_TRACE_BB_HOOK_(a) ps2_trace_bb(c, (a))
+#else
+#define PS2_TRACE_BB_HOOK_(a) ((void)0)
+#endif
+
+#if PS2_TRACE || PS2_TRACK_PC >= 1
+#define PS2_TRACE_FN(a) (PS2_PC_BLOCK_(a), PS2_TRACE_FN_HOOK_(a))
+#define PS2_TRACE_BB(a) (PS2_PC_BLOCK_(a), PS2_TRACE_BB_HOOK_(a))
+#else
+#define PS2_TRACE_FN(a) ((void)0)
+#define PS2_TRACE_BB(a) ((void)0)
+#endif
+#if PS2_TRACK_PC >= 2
+#define PS2_MEM_PC(a) (c->pc = (a))
+#else
+#define PS2_MEM_PC(a) ((void)0)
+#endif
+
+/* Loop back-edge hook. The recompiler emits PS2_BACKEDGE(target) on every
+ * backward branch inside a function (target <= branch address). With
+ * -DPS2_BACKEDGE_HOOK=1 it becomes a countdown:
+ *     if (--ps2_backedge_budget < 0) ps2_backedge(c, target);
+ * so the runtime can deliver pending interrupts / advance time inside
+ * busy-wait loops that contain no syscall (vblank counter spins,
+ * sceSifCheckStatRpc loops). ps2_backedge (runtime, weak default in vc_game)
+ * must reload ps2_backedge_budget; the runtime may also set it to 0 from the
+ * EE thread to request a poll at the next back edge. Cost when enabled: one
+ * load/decrement/store/branch per loop iteration. Off: no code. */
+#ifndef PS2_BACKEDGE_HOOK
+#define PS2_BACKEDGE_HOOK 0
+#endif
+#if PS2_BACKEDGE_HOOK
+extern int32_t ps2_backedge_budget;
+void ps2_backedge(ps2_cpu *c, uint32_t target);
+#define PS2_BACKEDGE(a) (PS2_UNLIKELY(--ps2_backedge_budget < 0) ? ps2_backedge(c, (a)) : (void)0)
+#else
+#define PS2_BACKEDGE(a) ((void)0)
+#endif
+
 static inline float ps2_bits_f(uint32_t u)
 {
 	float f;
@@ -571,8 +649,15 @@ static inline void ps2_mmi_pmthl(ps2_cpu *c, int rs, int fmt)
 /* ------------------------------------------------------------------------ */
 /* COP1 (FPU). Inputs: denormal -> signed 0, exponent 255 -> +/-FLT_MAX.      */
 /* Results: overflow -> +/-FLT_MAX, denormal -> signed 0. Rounding comes from */
-/* the host FPCR (round toward zero, see ps2_abi.h).                         */
-/* Not modelled: O/U/SO/SU flag bits in FCR31.                               */
+/* the host FPCR (round toward zero, see ps2_abi.h). add/sub keep one guard   */
+/* bit like the EE adder (ps2_fpu_addsub).                                    */
+/* Known deviations (same as PCSX2's default recompiler, iFPU.cpp):           */
+/*  - the EE treats exponent 255 as an ordinary exponent (max 0x7FFFFFFF);    */
+/*    here such values clamp to 0x7F7FFFFF (PCSX2 iFPUd "full" mode only).    */
+/*  - O/U/SO/SU flag bits in FCR31 are not modelled (with RZ+FZ PCSX2 also    */
+/*    practically never raises them); I/D/SI/SD are.                          */
+/*  - mul.s may be 1 ulp smaller on hardware in rare cases (PCSX2 FPU_MUL     */
+/*    hack, per-game); not modelled.                                          */
 /* ------------------------------------------------------------------------ */
 
 #define PS2_FMAX 0x7F7FFFFFu
@@ -600,21 +685,58 @@ static inline uint32_t ps2_fpu_res(float f)
 
 #define PS2_FV(n) ps2_fpu_val(c->f[n].u)
 
-static inline void ps2_fpu_add(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(PS2_FV(fs) + PS2_FV(ft)); }
-static inline void ps2_fpu_sub(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(PS2_FV(fs) - PS2_FV(ft)); }
-static inline void ps2_fpu_mul(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(PS2_FV(fs) * PS2_FV(ft)); }
-static inline void ps2_fpu_adda(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(PS2_FV(fs) + PS2_FV(ft)); }
-static inline void ps2_fpu_suba(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(PS2_FV(fs) - PS2_FV(ft)); }
-static inline void ps2_fpu_mula(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(PS2_FV(fs) * PS2_FV(ft)); }
-static inline float ps2_fpu_prod(ps2_cpu *c, int fs, int ft) { return ps2_fpu_val(ps2_f_bits(PS2_FV(fs) * PS2_FV(ft))); }
-static inline void ps2_fpu_madd(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(ps2_fpu_val(c->facc.u) + ps2_fpu_prod(c, fs, ft)); }
-static inline void ps2_fpu_msub(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(ps2_fpu_val(c->facc.u) - ps2_fpu_prod(c, fs, ft)); }
-static inline void ps2_fpu_madda(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(ps2_fpu_val(c->facc.u) + ps2_fpu_prod(c, fs, ft)); }
-static inline void ps2_fpu_msuba(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(ps2_fpu_val(c->facc.u) - ps2_fpu_prod(c, fs, ft)); }
+/* Operand as the EE sees it, as raw bits (see ps2_fpu_val). */
+static inline uint32_t ps2_fpu_clamp(uint32_t u)
+{
+	uint32_t e = u & 0x7F800000u;
+	if (e == 0) return u & 0x80000000u;
+	if (e == 0x7F800000u) return (u & 0x80000000u) | PS2_FMAX;
+	return u;
+}
 
+/* add.s / sub.s (and the add step of adda/madd/msub/madda/msuba).
+ * The EE adder keeps a single guard bit: when the exponents differ by d >= 2
+ * the low d-1 mantissa bits of the smaller operand are discarded before the
+ * add, and for d >= 25 the smaller operand only contributes its sign. This
+ * matches PCSX2's default EE recompiler (iFPU.cpp FPU_ADD_SUB, "used to mimic
+ * PS2's FPU add/sub behavior"); PCSX2's interpreter (FPU.cpp) omits it.
+ * Example: 1.0 - 0x33800001 = 0x3F7FFFFF on the EE, 0x3F7FFFFE in IEEE RZ. */
+static inline float ps2_fpu_addsub(uint32_t a, uint32_t b, int sub)
+{
+	a = ps2_fpu_clamp(a);
+	b = ps2_fpu_clamp(b);
+	int d = (int)((a >> 23) & 0xFFu) - (int)((b >> 23) & 0xFFu);
+	if (d >= 25)
+		b &= 0x80000000u;
+	else if (d >= 2)
+		b &= 0xFFFFFFFFu << (d - 1);
+	else if (d <= -25)
+		a &= 0x80000000u;
+	else if (d <= -2)
+		a &= 0xFFFFFFFFu << (-d - 1);
+	return sub ? ps2_bits_f(a) - ps2_bits_f(b) : ps2_bits_f(a) + ps2_bits_f(b);
+}
+
+static inline void ps2_fpu_add(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(ps2_fpu_addsub(c->f[fs].u, c->f[ft].u, 0)); }
+static inline void ps2_fpu_sub(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(ps2_fpu_addsub(c->f[fs].u, c->f[ft].u, 1)); }
+static inline void ps2_fpu_mul(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(PS2_FV(fs) * PS2_FV(ft)); }
+static inline void ps2_fpu_adda(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(ps2_fpu_addsub(c->f[fs].u, c->f[ft].u, 0)); }
+static inline void ps2_fpu_suba(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(ps2_fpu_addsub(c->f[fs].u, c->f[ft].u, 1)); }
+static inline void ps2_fpu_mula(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(PS2_FV(fs) * PS2_FV(ft)); }
+/* Product of madd/msub family, rounded and clamped before the add (no FMA). */
+static inline uint32_t ps2_fpu_prod(ps2_cpu *c, int fs, int ft) { return ps2_fpu_clamp(ps2_f_bits(PS2_FV(fs) * PS2_FV(ft))); }
+static inline void ps2_fpu_madd(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(ps2_fpu_addsub(c->facc.u, ps2_fpu_prod(c, fs, ft), 0)); }
+static inline void ps2_fpu_msub(ps2_cpu *c, int fd, int fs, int ft) { c->f[fd].u = ps2_fpu_res(ps2_fpu_addsub(c->facc.u, ps2_fpu_prod(c, fs, ft), 1)); }
+static inline void ps2_fpu_madda(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(ps2_fpu_addsub(c->facc.u, ps2_fpu_prod(c, fs, ft), 0)); }
+static inline void ps2_fpu_msuba(ps2_cpu *c, int fs, int ft) { c->facc.u = ps2_fpu_res(ps2_fpu_addsub(c->facc.u, ps2_fpu_prod(c, fs, ft), 1)); }
+
+/* div.s: clears the I/D cause bits, then sets I (0/0) or D (x/0) plus the
+ * sticky bit; result +/-FMAX with the XOR of the operand signs (PCSX2 rec
+ * recDIVhelper1; the interpreter does not clear I/D). Denormals count as 0. */
 static inline void ps2_fpu_div(ps2_cpu *c, int fd, int fs, int ft)
 {
 	uint32_t s = c->f[fs].u, t = c->f[ft].u;
+	c->fcr31 &= ~(PS2_FCR31_I | PS2_FCR31_D);
 	if ((t & 0x7F800000u) == 0) {
 		c->fcr31 |= (s & 0x7F800000u) == 0 ? (PS2_FCR31_I | PS2_FCR31_SI) : (PS2_FCR31_D | PS2_FCR31_SD);
 		c->f[fd].u = ((s ^ t) & 0x80000000u) | PS2_FMAX;
@@ -635,16 +757,21 @@ static inline void ps2_fpu_sqrt(ps2_cpu *c, int fd, int ft)
 	}
 }
 
+/* rsqrt.s: fd = fs / sqrt(|ft|). Clears I/D; a negative ft (sign bit set)
+ * sets I; ft == 0 (incl. denormal) sets I if fs == 0 else D, and the result is
+ * +/-FMAX with the sign of fs. Matches PCSX2's default recompiler
+ * (iFPU.cpp recRSQRThelper1); PCSX2's interpreter instead always sets D and
+ * takes the sign from ft. */
 static inline void ps2_fpu_rsqrt(ps2_cpu *c, int fd, int fs, int ft)
 {
 	uint32_t s = c->f[fs].u, t = c->f[ft].u;
 	c->fcr31 &= ~(PS2_FCR31_I | PS2_FCR31_D);
+	if (t & 0x80000000u) c->fcr31 |= PS2_FCR31_I | PS2_FCR31_SI;
 	if ((t & 0x7F800000u) == 0) {
-		c->fcr31 |= PS2_FCR31_D | PS2_FCR31_SD;
-		c->f[fd].u = ((s ^ t) & 0x80000000u) | PS2_FMAX;
+		c->fcr31 |= (s & 0x7F800000u) == 0 ? (PS2_FCR31_I | PS2_FCR31_SI) : (PS2_FCR31_D | PS2_FCR31_SD);
+		c->f[fd].u = (s & 0x80000000u) | PS2_FMAX;
 		return;
 	}
-	if (t & 0x80000000u) c->fcr31 |= PS2_FCR31_I | PS2_FCR31_SI;
 	float r = ps2_fpu_val(ps2_fpu_res(__builtin_sqrtf(ps2_fpu_val(t & 0x7FFFFFFFu))));
 	c->f[fd].u = ps2_fpu_res(ps2_fpu_val(s) / r);
 }
@@ -1031,6 +1158,9 @@ static inline void ps2_cop2_ctc2(ps2_cpu *c, int rt, int id)
 		ps2_vu0_ctrl_write(c, (uint32_t)id, v);
 	} else if (id == PS2_VI_MAC) {
 		/* read-only */
+	} else if (id == PS2_VI_STATUS) {
+		/* only the sticky bits (6-11) are writable (PCSX2 microVU_Macro recCTC2) */
+		c->vi[id] = (c->vi[id] & 0x3Fu) | (v & 0xFC0u);
 	} else if (id == PS2_VI_R) {
 		c->vi[id] = (v & 0x7FFFFFu) | 0x3F800000u;
 	} else {

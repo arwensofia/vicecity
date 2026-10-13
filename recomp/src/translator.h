@@ -25,6 +25,9 @@ struct FuncAnalysis {
 	std::map<uint32_t, std::vector<uint32_t>> jump_tables; // jr pc -> table entries
 	std::vector<uint32_t> unresolved_jr;         // jr rs (rs != ra) without a recognised table
 	std::vector<std::string> problems;           // reasons this function is not fully translated
+
+	// End of the reached code (highest decoded instruction + 4).
+	uint32_t end() const { return insns.empty() ? start : insns.rbegin()->first + 4; }
 };
 
 // Discover the function's reachable code by recursive descent from `start`,
@@ -42,12 +45,21 @@ struct EmitStats {
 };
 
 struct EmitOptions {
-	bool comments = true; // per-instruction "// addr mnemonic" comments
+	bool comments = true;    // per-instruction "// addr mnemonic" comments
+	bool trace_points = true; // PS2_TRACE_FN / PS2_TRACE_BB / PS2_MEM_PC macros (no code unless enabled
+	                          // at compile time, see ps2_ops.h)
 };
 
 // Known entries decide whether a target is a direct call (ps2f_X) or dispatch.
+// `comment` becomes the function's header comment (may span lines; no "*/").
 std::string emit_function(const FuncAnalysis &fa, const std::set<uint32_t> &entries,
                           const std::string &comment, const EmitOptions &opt, EmitStats &stats);
+
+// GPR written by an instruction (rd/rt/31), or -1.
+int insn_gpr_dest(const Insn &i);
+
+// True for instructions that access EE memory (loads/stores incl. COP1/COP2).
+bool is_memory_op(Op op);
 
 // C statement(s) for a single non-control instruction (used for delay slots too).
 std::string emit_instruction(const Insn &i, EmitStats &stats);

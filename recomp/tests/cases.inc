@@ -994,3 +994,176 @@ TESTCASE(vu_vf0_write_discarded, ASM(v1(40, XYZW, 0, 1, 2)),
 	setf(VF(1), 1, 2, 3, 4); setf(VF(2), 1, 1, 1, 1);
 	RUN();
 	CHECK_EQ(VF(0).uw[0], 0); CHECK_EQ(fb(VF(0).f[3]), fb(1.f));)
+
+// ======================= jump tables: path-sensitive base =======================
+// GCC switch whose base register is clobbered on the *other* path (delay slot of
+// an early "b default"): the analysis must follow the branch predecessor of the
+// dispatch block, not the linear predecessor (cf. SLUS_205.52 0x2789a0).
+TESTCASE_JT(jump_table_pred_path, 0x7100, OFFS(13, 15, 17),
+            ASM(daddu(V1, A0, ZERO), lui(V0, 0), addiu(V0, V0, 0x7100), bne(A1, ZERO, 3), sltiu(AT, V1, 3),
+                beq(ZERO, ZERO, 13), daddu(V0, ZERO, ZERO),
+                beq(AT, ZERO, 11), sll(A2, V1, 2), addu(A2, A2, V0), lw(A2, 0, A2), jr(A2), nop(),
+                jr(RA), addiu(V0, ZERO, 100), jr(RA), addiu(V0, ZERO, 101), jr(RA), addiu(V0, ZERO, 102),
+                addiu(V0, ZERO, 99)),
+	const uint64_t want[4] = {100, 101, 102, 99};
+	for (int k = 0; k < 4; k++) {
+		GPR(A0) = static_cast<uint64_t>(k); GPR(A1) = 1; GPR(V0) = 0;
+		RUN();
+		CHECK_EQ(GPR(V0), want[k]);
+	}
+	GPR(A0) = 1; GPR(A1) = 0;
+	RUN();
+	CHECK_EQ(GPR(V0), 99);
+	CHECK_EQ(g_log.indirect_jumps.size(), 0u);) // resolved to a switch, never dispatched
+
+// ======================= cross-check against PCSX2 =======================
+// Cases where an implementation could plausibly differ from PCSX2
+// (third_party/_upstream/pcsx2/pcsx2: R5900OpcodeImpl.cpp, MMI.cpp, FPU.cpp,
+// x86/iFPU.cpp = default EE recompiler, VUops.cpp, x86/microVU_Macro.inl).
+
+// iFPU.cpp FPU_ADD_SUB: one guard bit. 1.0 - 0x33800001 (exp diff 24): the
+// subtrahend loses its low 23 mantissa bits -> exactly 1 - 2^-24.
+// IEEE round-to-zero would give 0x3F7FFFFE. diff >= 25: only the sign survives.
+TESTCASE(x_fpu_add_guard_bit, ASM(fs_(1, 3, 1, 2), fs_(0, 4, 1, 5), fs_(0, 6, 1, 7), fs_(1, 8, 9, 10), fs_(0x19, 0, 1, 2), fs_(0x1C, 11, 0, 0)),
+	FPR(1) = fb(1.0f); FPR(2) = 0x33800001u; FPR(5) = 0xB0800000u /* -2^-30 */; FPR(7) = fb(0.75f);
+	FPR(9) = fb(3.0f); FPR(10) = 0x3F800001u; FPR(0) = 0;
+	RUN();
+	CHECK_EQ(FPR(3), 0x3F7FFFFFu);
+	CHECK_EQ(FPR(4), fb(1.0f));      // 1 - 2^-30 -> 1.0 (IEEE RZ: 0x3F7FFFFF)
+	CHECK_EQ(FPR(6), fb(1.75f));     // exact, unaffected
+	CHECK_EQ(FPR(8), 0x3FFFFFFFu);   // 3 - (1+ulp): diff 1, no masking, RZ
+	CHECK_EQ(c->facc.u, 0x3F7FFFFFu);  // suba uses the same adder
+	CHECK_EQ(FPR(11), 0x3F7FFFFFu);) // madd: acc + 0*0
+
+// MSUB: ACC - product goes through the same guard-bit adder (iFPU recMSUBtemp).
+TESTCASE(x_fpu_msub_guard_bit, ASM(fs_(0x1A, 0, 1, 1), fs_(0x1D, 3, 2, 1)),
+	FPR(1) = fb(1.0f); FPR(2) = 0x33800001u;
+	RUN();
+	CHECK_EQ(FPR(3), 0x3F7FFFFFu);)
+
+// div.s clears the I/D cause bits (iFPU recDIVhelper1); sticky bits stay.
+TESTCASE(x_fpu_div_clears_cause, ASM(ctc1(A0, 31), fs_(3, 3, 1, 2), cfc1(V0, 31)),
+	GPR(A0) = PS2_FCR31_I | PS2_FCR31_D | PS2_FCR31_SI | PS2_FCR31_SD; FPR(1) = fb(3.0f); FPR(2) = fb(2.0f);
+	RUN();
+	CHECK_EQ(FPR(3), fb(1.5f));
+	CHECK_EQ(GPR(V0), PS2_FCR31_SI | PS2_FCR31_SD);)
+
+// rsqrt.s special cases follow iFPU recRSQRThelper1: x/0 -> D, sign of fs;
+// 0/0 -> I; negative ft -> I (also for -0, which then also sets D).
+TESTCASE(x_fpu_rsqrt_special, ASM(fs_(0x16, 3, 1, 0), cfc1(V0, 31), fs_(0x16, 4, 0, 0), cfc1(V1, 31), fs_(0x16, 5, 2, 6),
+                                  cfc1(T0, 31), fs_(0x16, 7, 2, 8), cfc1(T1, 31)),
+	FPR(0) = 0; FPR(1) = fb(-2.0f); FPR(2) = fb(2.0f); FPR(6) = 0x80000000u; FPR(8) = fb(-4.0f);
+	RUN();
+	CHECK_EQ(FPR(3), 0xFF7FFFFFu);
+	CHECK_EQ(GPR(V0) & (PS2_FCR31_I | PS2_FCR31_D), PS2_FCR31_D);
+	CHECK_EQ(FPR(4), 0x7F7FFFFFu);
+	CHECK_EQ(GPR(V1) & (PS2_FCR31_I | PS2_FCR31_D), PS2_FCR31_I);
+	CHECK_EQ(FPR(5), 0x7F7FFFFFu); // 2 / sqrt(-0): sign of fs
+	CHECK_EQ(GPR(T0) & (PS2_FCR31_I | PS2_FCR31_D), PS2_FCR31_I | PS2_FCR31_D);
+	CHECK_EQ(FPR(7), fb(1.0f));    // 2 / sqrt(|-4|)
+	CHECK_EQ(GPR(T1) & (PS2_FCR31_I | PS2_FCR31_D), PS2_FCR31_I);)
+
+// FPU.cpp fp_max/fp_min: sign-magnitude integer order, so +0 > -0.
+TESTCASE(x_fpu_minmax_signed_zero, ASM(fs_(0x28, 3, 1, 2), fs_(0x29, 4, 1, 2), fs_(0x28, 5, 2, 1)),
+	FPR(1) = 0x80000000u; FPR(2) = 0;
+	RUN();
+	CHECK_EQ(FPR(3), 0u); CHECK_EQ(FPR(4), 0x80000000u); CHECK_EQ(FPR(5), 0u);)
+
+// FPU.cpp C_cond_S compares fpuDouble() values: denormal == 0, Inf == FMAX.
+TESTCASE(x_fpu_compare_clamped, ASM(fs_(0x32, 0, 1, 2), cfc1(V0, 31), fs_(0x32, 0, 3, 4), cfc1(V1, 31)),
+	FPR(1) = 0x00000123u; FPR(2) = 0x80000000u; FPR(3) = 0x7F800000u; FPR(4) = 0x7F7FFFFFu;
+	RUN();
+	CHECK_EQ(GPR(V0) >> 23 & 1, 1); CHECK_EQ(GPR(V1) >> 23 & 1, 1);)
+
+// FPU.cpp CVT_W: exponent > 0x4E800000 saturates by sign (incl. exactly -2^31).
+TESTCASE(x_fpu_cvt_w_bounds, ASM(fs_(0x24, 3, 1, 0), fs_(0x24, 4, 2, 0), fs_(0x24, 5, 6, 0)),
+	FPR(1) = 0xCF000000u; FPR(2) = 0x4F000000u; FPR(6) = 0x7F800000u;
+	RUN();
+	CHECK_EQ(FPR(3), 0x80000000u); CHECK_EQ(FPR(4), 0x7FFFFFFFu); CHECK_EQ(FPR(5), 0x7FFFFFFFu);)
+
+// R5900OpcodeImpl.cpp LWR: shift 0 sign-extends, others keep bits 32..63.
+TESTCASE(x_lwr_sign_extension, ASM(lwr(V0, 0, A0), lwr(V1, 1, A0)),
+	w32(0x3000, 0x80000001u); GPR(A0) = 0x3000; GPR(V0) = 0x1234567800000000ull; GPR(V1) = 0x1234567800000000ull;
+	RUN();
+	CHECK_EQ(GPR(V0), 0xFFFFFFFF80000001ull);
+	CHECK_EQ(GPR(V1), 0x1234567800800000ull);)
+
+// MMI.cpp DIV1/DIVU1: pipeline-1 special cases match DIV/DIVU.
+TESTCASE(x_div1_special, ASM(div1(A0, A1), divu1(A2, ZERO), mflo1(V1), mfhi1(T0)),
+	GPR(A0) = 0x80000000u; GPR(A1) = ~0ull; GPR(A2) = 0x80000005u;
+	RUN();
+	CHECK_EQ(GPR(V1), ~0ull);                    // divu1 x/0: LO1 = -1
+	CHECK_EQ(GPR(T0), 0xFFFFFFFF80000005ull);) // HI1 = sext(rs)
+
+TESTCASE(x_div1_intmin, ASM(div1(A0, A1), mflo1(V0), mfhi1(V1)),
+	GPR(A0) = 0x80000000u; GPR(A1) = ~0ull;
+	RUN();
+	CHECK_EQ(GPR(V0), 0xFFFFFFFF80000000ull); CHECK_EQ(GPR(V1), 0);)
+
+// MMI.cpp MADD: (u64)HI:LO + s64 product, results sign-extended, rd = LO.
+TESTCASE(x_madd_wrap, ASM(madd(V0, A0, A1)),
+	c->hi.ud[0] = 0x7FFFFFFF; c->lo.ud[0] = 0xFFFFFFFFFFFFFFFFull; GPR(A0) = 1; GPR(A1) = 1;
+	RUN();
+	CHECK_EQ(c->lo.ud[0], 0); CHECK_EQ(c->hi.ud[0], 0xFFFFFFFF80000000ull); CHECK_EQ(GPR(V0), 0);)
+
+// MMI.cpp PMFHL.SLW saturation boundaries.
+TESTCASE(x_pmfhl_slw_bounds, ASM(pmfhl(V0, 2)),
+	setw(c->lo, 0x7FFFFFFF, 0, 0x80000000u, 0); setw(c->hi, 0, 0, 0xFFFFFFFFu, 0);
+	RUN();
+	CHECK_EQ(GPR(V0), 0x7FFFFFFFull); CHECK_EQ(GPRHI(V0), 0xFFFFFFFF80000000ull);)
+
+// MMI.cpp PDIVBW: INT_MIN / -1 (halfword 0xFFFF) and division by zero.
+TESTCASE(x_pdivbw_special, ASM(mmi2(29, 0, A0, A1), mmi2(29, 0, A2, ZERO), pmfhl(V0, 0)),
+	setw(c->r[A0], 0x80000000u, 7, static_cast<uint32_t>(-7), 9); seth(c->r[A1], -1, 0, 0, 0, 0, 0, 0, 0);
+	setw(c->r[A2], 5, static_cast<uint32_t>(-5), 0, 1);
+	RUN(); // the second pdivbw (by 0) wins
+	CHECK_EQ(c->lo.uw[0], 0xFFFFFFFFu); CHECK_EQ(c->lo.uw[1], 1u); CHECK_EQ(c->lo.uw[2], 0xFFFFFFFFu);
+	CHECK_EQ(c->hi.uw[0], 5u); CHECK_EQ(c->hi.uw[1], static_cast<uint32_t>(-5));)
+
+TESTCASE(x_pdivbw_intmin, ASM(mmi2(29, 0, A0, A1)),
+	setw(c->r[A0], 0x80000000u, 7, static_cast<uint32_t>(-7), 9); seth(c->r[A1], -1, 0, 0, 0, 0, 0, 0, 0);
+	RUN();
+	CHECK_EQ(c->lo.uw[0], 0x80000000u); CHECK_EQ(c->hi.uw[0], 0u);
+	CHECK_EQ(c->lo.sw[1], -7); CHECK_EQ(c->lo.sw[2], 7); CHECK_EQ(c->lo.sw[3], -9);)
+
+// R5900OpcodeImpl.cpp MTSAB/MTSAH and MMI.cpp QFSRV with a halfword amount.
+TESTCASE(x_mtsah_qfsrv, ASM(mtsah(A0, 3), mmi1(27, V0, A1, A2), mfsa(V1)),
+	GPR(A0) = 6; set128(c->r[A1], 0x1111111111111111ull, 0x2222222222222222ull); set128(c->r[A2], 0x3333333344444444ull, 0x5555555566666666ull);
+	RUN();
+	CHECK_EQ(GPR(V1), 10); // ((6 & 7) ^ 3) << 1 = 10 bytes
+	CHECK_EQ(GPR(V0), 0x1111555555556666ull); CHECK_EQ(GPRHI(V0), 0x2222111111111111ull);) // (rs:rt) >> 80
+
+// microVU_Macro.inl recCTC2: only the sticky status bits (6-11) are writable.
+TESTCASE(x_vu_ctc2_status, ASM(ctc2(A0, 16), cfc2(V0, 16), ctc2(ZERO, 16), cfc2(V1, 16)),
+	VI(16) = 0x0Fu; GPR(A0) = 0xFFFFF000u | 0xFF0u;
+	RUN();
+	CHECK_EQ(GPR(V0), 0xFCFu);
+	CHECK_EQ(GPR(V1), 0x00Fu);)
+
+// VUops.cpp _vuCLIP: a denormal w compares as the largest denormal.
+TESTCASE(x_vu_clip_denormal_w, ASM(v2(31, XYZ, 1, 2)),
+	VF(1).uw[0] = 0x00800000u; VF(1).uw[1] = 0x807FFFFFu; VF(1).uw[2] = 0x80800000u; VF(2).uw[3] = 0x00000005u; VI(18) = 0;
+	RUN();
+	CHECK_EQ(VI(18), 0x21u);) // +x (normal > denormal), -z; y (denormal) neither
+
+// VUops.cpp _vuRSQRT: 0/0 -> Q = signed zero, status D and I (+ sticky).
+TESTCASE(x_vu_rsqrt_zero_zero, ASM(v2(58, 0, 1, 0)),
+	VF(1).uw[0] = 0x80000000u;
+	RUN();
+	CHECK_EQ(VI(22), 0x80000000u);
+	CHECK_EQ(VI(16) & 0xC30u, 0xC30u);)
+
+// VUops.cpp floatToInt: saturation from exponent >= 0x4F000000 (incl. Inf/NaN bit patterns).
+TESTCASE(x_vu_ftoi_saturate, ASM(v2(20, XYZW, 1, 2)),
+	VF(1).uw[0] = 0x4F000000u; VF(1).uw[1] = 0xCF000000u; VF(1).uw[2] = 0x7FC00000u; VF(1).uw[3] = 0x4EFFFFFFu;
+	RUN();
+	CHECK_EQ(VF(2).uw[0], 0x7FFFFFFFu); CHECK_EQ(VF(2).uw[1], 0x80000000u); CHECK_EQ(VF(2).uw[2], 0x7FFFFFFFu);
+	CHECK_EQ(VF(2).uw[3], 0x7FFFFF80u);)
+
+// Deliberate difference: an FMAC op keeps the D/I status bits set by a prior
+// FDIV op (hardware keeps them until the next FDIV op; PCSX2's interpreter
+// SYNCMSFLAGS drops them, its default microVU macro path keeps them).
+TESTCASE(x_vu_fmac_keeps_div_flags, ASM(v2(56, 0, 1, 0), v1(40, XYZW, 3, 2, 2)),
+	setf(VF(1), 1, 0, 0, 0); setf(VF(2), 1, 1, 1, 1);
+	RUN();
+	CHECK_EQ(VI(16) & 0x30u, 0x20u);) // D still set

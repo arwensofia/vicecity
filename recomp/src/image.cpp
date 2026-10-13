@@ -105,6 +105,72 @@ bool Image::load_elf(const std::string &path, std::string &err)
 		err = "no loadable segments";
 		return false;
 	}
+	// Executable sections (SHF_EXECINSTR), if a section table is present. The
+	// game has a single RWX segment, so these are the only way to tell .text
+	// from .data. Malformed tables are ignored (sections are optional).
+	exec_sections.clear();
+	const uint32_t shoff = rd32(b, 32);
+	const uint16_t shentsize = rd16(b, 46), shnum = rd16(b, 48);
+	if (shoff && shentsize >= 40 && shnum <= 1024 &&
+	    static_cast<uint64_t>(shoff) + static_cast<uint64_t>(shentsize) * shnum <= b.size()) {
+		for (unsigned i = 0; i < shnum; i++) {
+			size_t o = shoff + static_cast<size_t>(i) * shentsize;
+			uint32_t type = rd32(b, o + 4), flags = rd32(b, o + 8), addr = rd32(b, o + 12), size = rd32(b, o + 20);
+			if (type == 1 /*PROGBITS*/ && (flags & 4) /*EXECINSTR*/ && size && static_cast<uint64_t>(addr) + size <= 0x100000000ull)
+				exec_sections.emplace_back(addr, addr + size);
+		}
+	}
+	return true;
+}
+
+bool Image::in_exec_section(uint32_t addr) const
+{
+	if (exec_sections.empty()) return is_code(addr);
+	for (const auto &[a, e] : exec_sections)
+		if (addr >= a && addr < e) return is_code(addr);
+	return false;
+}
+
+bool read_csv(const std::string &path, std::vector<std::string> &header,
+              std::vector<std::vector<std::string>> &rows, std::string &err)
+{
+	std::ifstream f(path, std::ios::binary);
+	if (!f) {
+		err = "cannot open " + path;
+		return false;
+	}
+	std::string line;
+	bool first = true;
+	while (std::getline(f, line)) {
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		if (line.empty()) continue;
+		std::vector<std::string> fields;
+		std::string cur;
+		bool quoted = false;
+		for (size_t k = 0; k < line.size(); k++) {
+			char ch = line[k];
+			if (ch == '"') {
+				if (quoted && k + 1 < line.size() && line[k + 1] == '"') {
+					cur.push_back('"');
+					k++;
+				} else {
+					quoted = !quoted;
+				}
+			} else if (ch == ',' && !quoted) {
+				fields.push_back(cur);
+				cur.clear();
+			} else {
+				cur.push_back(ch);
+			}
+		}
+		fields.push_back(cur);
+		if (first) {
+			header = std::move(fields);
+			first = false;
+		} else {
+			rows.push_back(std::move(fields));
+		}
+	}
 	return true;
 }
 
