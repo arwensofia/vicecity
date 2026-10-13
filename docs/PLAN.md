@@ -66,6 +66,8 @@ Named: `Explosion::AddExplosion` `0x147350`, `ProjectileInfo::AddProjectile` `0x
 - [x] Decide graphics strategy (2026-10-13): reuse PCSX2's GS (Metal) + VU1 now; replacing
       RenderWare's PS2 pipelines with a native Metal renderer is a possible later phase.
       Project relicensed GPL-3.0 accordingly.
-- [ ] Identify the remaining string-less libraries (`libcdvd`, `libscf`, `libipu`,
-      `libvu0`) and the unknown tail at `0x42ded0+`.
+- [x] Identify the remaining string-less libraries (2026-10-13) — `libmc`, `libcdvd`, `libipu`,
+      `libscf`, `libdev` (not libvu0), libgcc, newlib libm, a DTS Interactive encoder, RenderWare
+      toolkit code, libkernl kernel patches and static constructors; compiler-fingerprint rule
+      + `tools/module_overrides.csv`; 0 functions left unknown. See [MODULES.md](MODULES.md).
 - [ ] Pick or write the recompiler (MIPS R5900 → C).

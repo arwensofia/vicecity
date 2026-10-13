@@ -1,11 +1,18 @@
 """Assign every function to a module (game / RenderWare / Sony lib / C runtime).
 
-Inputs (from ClassifyFunctions.java): classified.csv, strings.csv, calls.csv.
+Inputs (from ClassifyFunctions.java): classified.csv, strings.csv, calls.csv, and
+tools/module_overrides.csv (hand-verified address ranges with evidence).
 Outputs: modules.csv (per function) and modules.md (summary).
 
-Seeds come from referenced strings; unlabeled functions then inherit a label
-when every labeled caller agrees, or when both address neighbours agree
-(static linking keeps each object file contiguous).
+Precedence: overrides > referenced strings > syscall use > compiler fingerprint >
+propagation. Unlabeled functions inherit a label when both address neighbours
+agree (static linking keeps each object file contiguous) or when every labeled
+caller agrees, unless that contradicts their compiler fingerprint.
+
+Compiler fingerprint (classified.csv "prologue" = width of the first ra / s-reg
+spill): the game was built with flags that spill ra with sd and s-regs with sq
+("G"), RenderWare spills both with sq ("R"), and Sony libraries, newlib, libgcc
+and libstdc++ spill s-regs with sd ("S"). Leaf functions carry no fingerprint.
 
     python3 -I tools/modules.py out/
 """
@@ -27,17 +34,51 @@ RULES = [
                      r"Heap resized|subrastering|creating raster|nonsensical limited memory"),
     ("libc",         r"vfprintf|^atan2f$|^Infinity$|assertion '%s' failed|^\(null\)$|0123456789abcdef"),
     ("libstdc++",    r"vector::insert|std::|Memory allocation failure"),
-    ("sony:libkernl", r"^TTY:|# TLB|UDNL|libkernl|rom0:ROMVER|Can't read rom"),
+    ("sony:libkernl", r"^TTY:|# TLB|UDNL|libkernl"),
     ("sony:libgraph", r"sceGs|_CHCR=|_TADR=|_MADR=|VIF1_STAT"),
     ("sony:libsdr",  r"sceSdRemote|PsIIlibsdr"),
     ("sony:libdma",  r"^libdma:"),
     ("sony:libpad",  r"^libpad:|libpad\.a"),
     ("sony:libmc",   r"libmc|mcman|mcserv"),
+    ("sony:libcdvd", r"Libcdvd|^sceCd(St|Cb)"),
+    ("sony:libscf",  r"rom0:ROMVER|Can't read rom"),
 ]
 RULES = [(name, re.compile(rx)) for name, rx in RULES]
 # Generic game strings. Requires prose-like text so stray pointers into data
 # (e.g. animation-name tables) don't seed labels.
 GAME = re.compile(r"[ \\%]|\.(cpp|CPP|dat|scm|ifp|IFP|ipl|IPL)\b")
+
+
+OVERRIDES = Path(__file__).with_name("module_overrides.csv")
+
+
+def fingerprint(prologue):
+    ra, _, s = (prologue or "-/-").partition("/")
+    if ra == "sq":
+        return "R"
+    if ra == "sd" and s == "sq":
+        return "G"
+    if s == "sd":
+        return "S"
+    return ""
+
+
+def compatible(fp, label):
+    """Whether a propagated label is plausible for a function's fingerprint."""
+    if fp == "R":
+        return label == "renderware"
+    if fp == "G":
+        return label in ("game", "libstdc++")
+    if fp == "S":
+        return label not in ("game", "renderware")
+    return True
+
+
+def load_overrides():
+    if not OVERRIDES.exists():
+        return []
+    return [(int(r["start"], 16), int(r["end"], 16), r["module"])
+            for r in csv.DictReader(open(OVERRIDES))]
 
 
 def classify_string(text):
@@ -66,13 +107,31 @@ def main(out):
             elif lbl.startswith("rw:"):
                 votes[a]["renderware"] += 5
 
-    module = {a: v.most_common(1)[0][0] for a, v in votes.items()}
-    source = {a: "strings" for a in module}
+    fp = {a: fingerprint(f.get("prologue")) for a, f in funcs.items()}
+    module, source = {}, {}
+    overrides = load_overrides()
+    for a in order:
+        v = int(a, 16)
+        for lo, hi, m in overrides:
+            if lo <= v < hi:
+                module[a], source[a] = m, "override"
+                break
+    for a, v in votes.items():
+        if a not in module:
+            module[a], source[a] = v.most_common(1)[0][0], "strings"
     # Only the kernel library issues syscalls directly (game code goes through its stubs).
     for a, f in funcs.items():
         if f["syscalls"] and a not in module:
             module[a] = "sony:libkernl"
             source[a] = "syscall"
+    # The generic "game" string rule is weak (any prose); a RenderWare fingerprint wins.
+    for a in order:
+        if source.get(a) == "strings" and module[a] == "game" and fp[a] == "R":
+            module[a], source[a] = "renderware", "fingerprint"
+    for a in order:
+        if a not in module and fp[a] in ("R", "G"):
+            module[a] = "renderware" if fp[a] == "R" else "game"
+            source[a] = "fingerprint"
 
     callers = defaultdict(set)
     for r in csv.DictReader(open(out / "calls.csv")):
@@ -88,7 +147,7 @@ def main(out):
                 prev = module[a]
                 continue
             nxt = next((module[b] for b in order[i + 1:] if b in module), None)
-            if prev is not None and prev == nxt:
+            if prev is not None and prev == nxt and compatible(fp[a], prev):
                 module[a] = prev
                 source[a] = "neighbours"
                 n += 1
@@ -102,7 +161,7 @@ def main(out):
             if a in module:
                 continue
             labels = {module[c] for c in callers[a] if c in module}
-            if len(labels) == 1:
+            if len(labels) == 1 and compatible(fp[a], next(iter(labels))):
                 module[a] = labels.pop()
                 source[a] = "callers"
                 n += 1
@@ -113,11 +172,11 @@ def main(out):
 
     with open(out / "modules.csv", "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["address", "size", "module", "source", "hw", "syscalls", "cop2", "mmi"])
+        w.writerow(["address", "size", "module", "source", "hw", "syscalls", "cop2", "mmi", "fingerprint"])
         for a in order:
             f = funcs[a]
             w.writerow([a, f["size"], module.get(a, "unknown"), source.get(a, ""),
-                        f["hw"], f["syscalls"], f["cop2"], f["mmi"]])
+                        f["hw"], f["syscalls"], f["cop2"], f["mmi"], fp[a]])
 
     stats = defaultdict(lambda: Counter())
     sys_by_mod = defaultdict(set)
@@ -149,6 +208,9 @@ def main(out):
     lines += ["", f"Syscalls used ({len(allsys)}): " + " ".join(map(str, allsys))]
     src = Counter(source.get(a, "unlabeled") for a in order)
     lines += ["", "Label provenance: " + ", ".join(f"{k} {v}" for k, v in src.most_common())]
+    conflicts = [a for a in order if source.get(a) == "strings" and not compatible(fp[a], module[a])]
+    lines += ["", f"String-seeded labels contradicting the compiler fingerprint ({len(conflicts)}): "
+              + " ".join(a.lstrip("0") for a in conflicts[:40]) + (" ..." if len(conflicts) > 40 else "")]
     (out / "modules.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

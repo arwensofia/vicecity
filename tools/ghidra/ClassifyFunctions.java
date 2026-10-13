@@ -4,6 +4,9 @@
 // Columns: hardware register blocks touched (resolved from lui/offset pairs),
 // syscall numbers, VU0 macro (COP2) and MMI instruction counts, and labels from
 // any marker strings referenced (Sony "PsIIlib*"/"libxxx:", RenderWare $Id, *.cpp).
+// "prologue" is a compiler fingerprint: width of the first ra / s-register spill to
+// the stack ("sd", "sq" or "-"), e.g. "sd/sq". In this binary game code uses sd/sq,
+// RenderWare sq/sq and Sony libs / newlib / libgcc sd/sd (see tools/modules.py).
 // Usage (headless): -postScript ClassifyFunctions.java <outdir>
 // @category ViceCity
 import ghidra.app.script.GhidraScript;
@@ -44,7 +47,7 @@ public class ClassifyFunctions extends GhidraScript {
             sites.println("function,instruction,hw_address,block,disasm");
             strs = strings;
             strs.println("function,string_addr,text");
-            out.println("address,size,name,hw,syscalls,cop2,mmi,labels");
+            out.println("address,size,name,hw,syscalls,cop2,mmi,labels,prologue");
             calls.println("caller,callee");
             for (Function f : listing.getFunctions(true)) {
                 if (monitor.isCancelled()) break;
@@ -62,12 +65,23 @@ public class ClassifyFunctions extends GhidraScript {
         Set<String> hw = new TreeSet<>(), labels = new TreeSet<>(), sys = new TreeSet<>();
         Set<Address> callees = new LinkedHashSet<>();
         Long v1 = null;
-        int cop2 = 0, mmi = 0;
+        int cop2 = 0, mmi = 0, nIns = 0;
+        String raSave = "-", sSave = "-";
 
         for (Instruction ins : listing.getInstructions(f.getBody(), true)) {
             String m = ins.getMnemonicString().toLowerCase();
             if (m.startsWith("_")) m = m.substring(1);   // delay-slot marker
             curIns = ins.getAddress();
+
+            if (nIns++ < 48 && (m.equals("sd") || m.equals("sq") || m.equals("sw"))) {
+                Register rt = firstRegister(ins, 0), base = null;
+                for (Object o : ins.getOpObjects(1)) if (o instanceof Register) base = (Register) o;
+                if (rt != null && base != null && gpr(base).equals("sp")) {
+                    String r = gpr(rt);
+                    if (r.equals("ra") && raSave.equals("-")) raSave = m;
+                    else if (r.matches("s[0-8]") && sSave.equals("-")) sSave = m;
+                }
+            }
 
             if (m.equals("syscall")) sys.add(v1 == null ? "?" : Long.toString(v1));
             if (isCop2(m)) cop2++;
@@ -115,9 +129,9 @@ public class ClassifyFunctions extends GhidraScript {
             }
         }
         for (Address c : callees) calls.println(f.getEntryPoint() + "," + c);
-        out.printf("%s,%d,%s,%s,%s,%d,%d,%s%n", f.getEntryPoint(), f.getBody().getNumAddresses(),
+        out.printf("%s,%d,%s,%s,%s,%d,%d,%s,%s/%s%n", f.getEntryPoint(), f.getBody().getNumAddresses(),
                    f.getName(true).replace(",", "_"), String.join(" ", hw), String.join(" ", sys),
-                   cop2, mmi, String.join(" ", labels).replace(",", "_"));
+                   cop2, mmi, String.join(" ", labels).replace(",", "_"), raSave, sSave);
     }
 
     // The R5900 module exposes GPRs both as "v0" and as the low-half alias "v0_lo".
