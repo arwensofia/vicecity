@@ -71,3 +71,15 @@ Named: `Explosion::AddExplosion` `0x147350`, `ProjectileInfo::AddProjectile` `0x
       toolkit code, libkernl kernel patches and static constructors; compiler-fingerprint rule
       + `tools/module_overrides.csv`; 0 functions left unknown. See [MODULES.md](MODULES.md).
 - [ ] Pick or write the recompiler (MIPS R5900 → C).
+
+### Phase 3 — GS/VU1 runtime layer (2026-10-13)
+
+- PCSX2 (`0f71e668`) GS (HW renderer on Metal, SW renderer), VU0/VU1 interpreters, VIF
+  (NEON unpack dynarec), GIF unit and DMAC imported into `third_party/pcsx2` (435 files,
+  2 local patches; see `third_party/README.md`), built as static libraries with CMake.
+- `runtime/gs/vc_gs.h`: narrow interface (register-level EE/GS access, PATH1/2/3 HLE
+  submission, VU1 upload/start, vsync/present, readback), synchronous execution, PS2 memory
+  owned by vc_gs. Design: `runtime/gs/README.md`.
+- `runtime/tests/gs_smoke` draws through PATH3 (HLE and GIF DMA), PATH2 (VIF1 DIRECT) and
+  PATH1 (VIF1 DMA → MPG/UNPACK/MSCAL → VU1 XGKICK) and verifies the displayed image, GS memory
+  and VSINT/DMAC interrupts. Passes on Metal (windowed and headless) and on the SW renderer.

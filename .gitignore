@@ -18,3 +18,6 @@ recomp_out/
 # --- Build / OS ---
 build/
 .DS_Store
+
+# --- Upstream source checkouts (reference only; imported files live in third_party/<name>/) ---
+third_party/_upstream/
