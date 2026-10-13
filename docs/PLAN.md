@@ -105,3 +105,31 @@ not modelled; VU0 macro flags are always computed (could be elided by liveness).
 - `runtime/tests/gs_smoke` draws through PATH3 (HLE and GIF DMA), PATH2 (VIF1 DIRECT) and
   PATH1 (VIF1 DMA → MPG/UNPACK/MSCAL → VU1 XGKICK) and verifies the displayed image, GS memory
   and VSINT/DMAC interrupts. Passes on Metal (windowed and headless) and on the SW renderer.
+
+### Phase 3/4 — first boot (2026-10-13)
+
+- `runtime/iop`: emulated IOP services (SIF RPC HLE, CDVD + streaming, CDSTREAM, silent
+  SAMPMAN2/sdrdrv, padman with keyboard + GameController, mcserv backed by files, ISO9660 reader).
+- `runtime/kernel`, `runtime/mem`, `runtime/app`: fiber-based EE threads, 65 syscalls + alarm/TLB,
+  interrupt delivery at syscalls / register accesses / loop back-edges, VU0 micro mode via PCSX2,
+  scratchpad DMA, `vicecity` app (`--iso`, `--elf`, `--log`, `--trace`, `--screenshot N:file.ppm`).
+- `recomp`: `vc_game` CMake target (5,755 functions incl. 210 pointer-only entries), symbol table,
+  trace/PC tracking, back-edge hook.
+- **Result:** the recompiled game boots through crt0, `_InitSys`, `.ctors` and `main` into
+  `TheGame` and renders the RenderWare loading screens (artwork + progress bar) with Metal.
+  See `docs/BOOT.md` for the boot path.
+
+### Current blocker
+
+- First 3D render in `TheGame` (0x299cc0 → … → 0x3c63c8): a material's texture leads to a raster
+  pointer of 0x100000; reads hit unmapped memory and the display goes black (game keeps running).
+  Cause unknown: loaded data, heap, instruction semantics or VU0. Suspicious: VU0 TPC reads back 2
+  after a `vcallms` started at 4. Next: memory-write watchpoint on that pointer.
+
+### Next
+
+- [ ] Fix the first-3D-render corruption (above).
+- [ ] Headless screenshots are black (`--headless` capture path); windowed Metal works.
+- [ ] Code pointers still not entries: dense table 0x3b414c–0x3b447c (RenderWare), 0x3701bc.
+- [ ] IPU (import from PCSX2) for the FMV logos; currently skipped.
+- [ ] Audio: SAMPMAN2 command semantics (needs the IRX analysed), SPU2 output via CoreAudio.
