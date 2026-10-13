@@ -230,6 +230,54 @@ bool vc::gs::VU1Busy()
 	return (VU0.VI[REG_VPU_STAT].UL & 0x100) != 0;
 }
 
+void vc::gs::RaiseIntc(int bit)
+{
+	if (bit >= 0 && bit < 15)
+		hwIntcIrq(bit);
+}
+
+void vc::gs::RaiseDmac(int channel)
+{
+	if (channel >= 0 && channel < 16)
+		hwDmacIrq(channel);
+}
+
+void vc::gs::ExecuteVU0(int32_t pc, void* vf, void* acc, uint32_t* vi)
+{
+	std::memcpy(VU0.VF, vf, 32 * 16);
+	VU0.VF[0].f.x = 0.0f;
+	VU0.VF[0].f.y = 0.0f;
+	VU0.VF[0].f.z = 0.0f;
+	VU0.VF[0].f.w = 1.0f;
+	std::memcpy(&VU0.ACC, acc, 16);
+	for (int i = 0; i <= REG_Q; i++)
+		VU0.VI[i].UL = vi[i];
+	VU0.VI[0].UL = 0;
+	VU0.q.UL = vi[REG_Q];
+
+	vu0ExecMicro(pc < 0 ? static_cast<u32>(-1) : static_cast<u32>(pc));
+	vu0Finish();
+
+	std::memcpy(vf, VU0.VF, 32 * 16);
+	std::memcpy(acc, &VU0.ACC, 16);
+	for (int i = 0; i <= REG_Q; i++)
+		vi[i] = VU0.VI[i].UL;
+	vi[REG_TPC] = VU0.VI[REG_TPC].UL;
+}
+
+void vc::gs::ResetVU0()
+{
+	CpuVU0->Reset();
+	VU0.VI[REG_VPU_STAT].UL &= ~0xffu;
+}
+
+void vc::gs::ResetVU1()
+{
+	vu1Finish(false);
+	CpuVU1->Reset();
+	VU0.VI[REG_VPU_STAT].UL &= ~0xff00u;
+}
+
 void vc::gs::RunEvents()
 {
 	host::RunEvents();

@@ -103,6 +103,34 @@
  *  stack (e.g. a coroutine/fiber): recompiled code keeps return linkage on the
  *  host stack, so an EE context switch inside a syscall must switch host stacks
  *  too. ram/spr/vu0_mem pointers are shared by all contexts.
+ *  The runtime (runtime/kernel) gives each EE thread its own ps2_cpu and fiber;
+ *  COP2 (vf/vacc/vi) is one piece of hardware, copied to the incoming thread's
+ *  ps2_cpu on every switch. Interrupt handlers run on a separate ps2_cpu with
+ *  their own EE stack, so a hook never modifies the interrupted *c except
+ *  through a thread switch, which preserves it.
+ *
+ * ---------------------------------------------------------------------------
+ * Interrupt delivery points
+ * ---------------------------------------------------------------------------
+ *  Recompiled code is never preempted asynchronously. The runtime delivers
+ *  interrupts (INTC/DMAC handlers, alarms, vblank) and may switch threads only
+ *  inside hooks: ps2_syscall, ps2_mem_*_slow for hardware registers, ei / mtc0
+ *  Status, ps2_vu0_ctrl_write(CMSAR1), and the back-edge hook
+ *  ps2_backedge(c, loop_head) that recompiled code calls on backward branches
+ *  when ps2_backedge_budget runs out (declared in recomp/include/ps2_ops.h;
+ *  weak default in vc_game, overridden by the runtime, which reloads the budget
+ *  to PS2_BACKEDGE_DEFAULT_BUDGET). This is what lets loops that spin on RAM
+ *  written by interrupt handlers terminate.
+ *  The i* syscalls (negative numbers) may be called from thread context (e.g.
+ *  an RPC end function run synchronously by an HLE override); they then defer
+ *  any reschedule to the next delivery point, as on the EE.
+ *
+ * ---------------------------------------------------------------------------
+ * Diagnostics fields
+ * ---------------------------------------------------------------------------
+ *  c->pc is written by every hook call site and, when the recompiled code is
+ *  built with PS2_TRACK_PC >= 1 (VC_GAME_TRACK_PC), by trace points at basic
+ *  blocks (and loads/stores with 2). It is for diagnostics only.
  */
 #ifndef PS2_ABI_H
 #define PS2_ABI_H
@@ -115,7 +143,7 @@
 extern "C" {
 #endif
 
-#define PS2_ABI_VERSION 1
+#define PS2_ABI_VERSION 2
 
 #if defined(__GNUC__) || defined(__clang__)
 #define PS2_LIKELY(x) __builtin_expect(!!(x), 1)
@@ -352,7 +380,11 @@ extern const uint32_t ps2_recomp_ctor_count;
  * ps2_jump_indirect: jr rs (rs != ra) or a branch/jump leaving the function to
  *   an address that is not a known entry. Semantically a tail call: after it
  *   returns, the recompiled function returns too.
- * Unknown targets: log (pc, target) and fail gracefully. */
+ * Unknown targets: log (pc, target) and fail gracefully.
+ * vc_game (recomp/support/ps2_recomp_support.c, ps2_recomp.h) has weak default
+ * implementations (binary search, misses go to ps2_dispatch_unknown and
+ * return); runtime/kernel/dispatch.cpp overrides both and stops with a
+ * diagnostic (trace dump, registers, thread list) on a miss. */
 void ps2_call_indirect(ps2_cpu *c, uint32_t pc, uint32_t target);
 void ps2_jump_indirect(ps2_cpu *c, uint32_t pc, uint32_t target);
 
@@ -421,6 +453,10 @@ static inline void ps2_cpu_reset_regs(ps2_cpu *c)
 /*
  * Changelog
  *  1 (2026-10-13) initial version (incl. ps2_recomp_ctors).
+ *  2 (2026-10-13) documentation only, no layout/signature change: interrupt
+ *    delivery points incl. the back-edge hook, thread/COP2 model, i* syscalls
+ *    from thread context, weak dispatch defaults in vc_game, c->pc written by
+ *    trace points. See runtime/include/vc_iop.h for the IOP boundary.
  */
 
 #ifdef __cplusplus

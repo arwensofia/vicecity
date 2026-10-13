@@ -118,6 +118,22 @@ void UploadVU1Data(uint32_t byte_addr, const void* data, size_t bytes);
 void StartVU1(uint32_t pc);
 bool VU1Busy();
 
+// Interrupt sources owned by the runtime (timers, VBLANK, SIF/IPU/SPR DMA completion): set
+// INTC_STAT bit `bit` (0..14) / the DMAC D_STAT.CIS bit of `channel` (0..9, 13..15) and
+// re-evaluate the interrupt lines, calling int0/int1 if the source is unmasked.
+void RaiseIntc(int bit);
+void RaiseDmac(int channel);
+
+// VU0 micro mode (vcallms/vcallmsr). `vf` = 32 x 16-byte VF registers, `acc` = 16 bytes,
+// `vi` = 32 COP2 registers in ps2_abi.h order (VI0-15, Status, MAC, Clip, -, R, I, Q, ...).
+// Copies VF/ACC/VI[0..22] into the VU0 interpreter, runs the microprogram at `pc` (in 64-bit
+// instruction units; -1 = continue at TPC) to its E-bit, and copies the registers back
+// (vi[26] receives TPC). Synchronous.
+void ExecuteVU0(int32_t pc, void* vf, void* acc, uint32_t* vi);
+// Reset VU0 (FBRST.RST0) / VU1 (FBRST.RST1).
+void ResetVU0();
+void ResetVU1();
+
 // Drain pending DMA/VIF/GIF/VU events. Called internally after every Hw* write and HLE
 // submission; exposed for runtimes that change DMAC state behind our back.
 void RunEvents();
